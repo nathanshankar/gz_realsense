@@ -42,7 +42,7 @@ jobs:
             libgz-plugin2-dev \
             libgz-rendering8-dev \
             libgz-sensors8-dev \
-            libgz-transport12-dev \
+            libgz-transport13-dev \
             libgz-math7-dev \
             libgz-common5-dev \
             libgz-msgs10-dev \
