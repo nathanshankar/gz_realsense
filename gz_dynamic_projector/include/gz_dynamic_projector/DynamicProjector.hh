@@ -53,6 +53,8 @@ private:
   void OnNewPointCloud2(const msgs::PointCloudPacked &msg);
   void OnCameraInfo2(const msgs::CameraInfo &msg);
   void OnNewColorImage(const msgs::Image &msg);
+  void OnNewDepthPointCloud(const msgs::PointCloudPacked &msg);
+  void OnDepthCameraInfo(const msgs::CameraInfo &msg);
   
   // Core processing
   void ProcessImage(const msgs::Image &msg,
@@ -78,6 +80,7 @@ private:
   bool enhanceRgb{false};
   std::string sensor1Topic;
   std::string sensor2Topic;
+  std::string depthTopic;
   float disparityOffset{0.0f};
   int numDots{5000};
   int laserPower{100};
@@ -94,10 +97,13 @@ private:
   // Cached point clouds and camera info
   msgs::PointCloudPacked lastCloud1;
   msgs::PointCloudPacked lastCloud2;
+  msgs::PointCloudPacked lastDepthCloud;
   bool cam1InfoReceived{false};
   bool cam2InfoReceived{false};
+  bool depthInfoReceived{false};
   std::array<double, 9> cam1_K{};
   std::array<double, 9> cam2_K{};
+  std::array<double, 9> depth_K{};
 
   // Random number generator for pattern
   std::mt19937 rng{static_cast<unsigned int>(std::chrono::steady_clock::now().time_since_epoch().count())};

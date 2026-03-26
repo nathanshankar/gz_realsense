@@ -49,6 +49,33 @@ def generate_launch_description():
         executable='joint_state_publisher_gui',
         name='joint_state_publisher_gui',
     )
+
+    ros_gz_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
+            '/color/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/color/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/depth/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/depth/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/infra1/ir/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/infra1/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/infra2/ir/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/infra2/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/depth/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+        ],
+        remappings=[
+            ('/color/image_raw', '/camera/color/image_raw'),
+            ('/color/camera_info', '/camera/color/camera_info'),
+            ('/depth/depth_image', '/camera/depth/image_raw'),
+            ('/depth/camera_info', '/camera/depth/camera_info'),
+            ('/infra1/ir/image', '/camera/infra1/image_raw'),
+            ('/infra1/camera_info', '/camera/infra1/camera_info'),
+            ('/infra2/ir/image', '/camera/infra2/image_raw'),
+            ('/infra2/camera_info', '/camera/infra2/camera_info'),
+            ('/depth/points', '/camera/depth/points'),
+        ]
+    )
     
 
     # Rviz node
@@ -65,6 +92,7 @@ def generate_launch_description():
     ld.add_action(gz_start_world)
     ld.add_action(node_spawn_entity)
     ld.add_action(node_robot_state_publisher)
+    ld.add_action(ros_gz_bridge)
     #ld.add_action(node_joint_state_publisher)
     ld.add_action(node_rviz)
     return ld

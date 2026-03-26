@@ -27,6 +27,7 @@ void DynamicProjector::Configure(const sim::Entity &_entity,
 {
     mode = _sdf->Get<std::string>("mode", "mono").first;
     sensor1Topic = _sdf->Get<std::string>("sensor1_topic");
+    depthTopic = _sdf->Get<std::string>("depth_topic", "").first;
     laserPower = _sdf->Get<int>("laser_power", 100).first;
     hfov = _sdf->Get<double>("hfov", 1.7).first;
     vfov = _sdf->Get<double>("vfov", 1.2).first;
@@ -48,9 +49,19 @@ void DynamicProjector::Configure(const sim::Entity &_entity,
         numDots = _sdf->Get<int>("num_dots", 1000 + static_cast<int>(dotScale * (5000 - 1000))).first;
     }
 
+    // Subscribe to images - check both possible naming conventions (topic and topic/image)
+    node.Subscribe(sensor1Topic, &DynamicProjector::OnNewImage1, this);
     node.Subscribe(sensor1Topic + "/image", &DynamicProjector::OnNewImage1, this);
-    node.Subscribe(sensor1Topic + "/points", &DynamicProjector::OnNewPointCloud1, this);
+    // node.Subscribe(sensor1Topic + "/points", &DynamicProjector::OnNewPointCloud1, this);
     node.Subscribe(sensor1Topic + "/camera_info", &DynamicProjector::OnCameraInfo1, this);
+
+    if (!depthTopic.empty())
+    {
+        std::string fullDepthTopic = (depthTopic[0] == '/') ? depthTopic : "/" + depthTopic;
+        gzmsg << "DynamicProjector: Subscribing to depth data on " << fullDepthTopic << std::endl;
+        node.Subscribe(fullDepthTopic + "/points", &DynamicProjector::OnNewDepthPointCloud, this);
+        node.Subscribe(fullDepthTopic + "/camera_info", &DynamicProjector::OnDepthCameraInfo, this);
+    }
 
     if (enhanceRgb){
     node.Subscribe("/color/image_raw", &DynamicProjector::OnNewColorImage, this);
@@ -61,14 +72,32 @@ void DynamicProjector::Configure(const sim::Entity &_entity,
 
     if (mode == "stereo")
     {
+        node.Subscribe(sensor2Topic, &DynamicProjector::OnNewImage2, this);
         node.Subscribe(sensor2Topic + "/image", &DynamicProjector::OnNewImage2, this);
-        node.Subscribe(sensor2Topic + "/points", &DynamicProjector::OnNewPointCloud2, this);
+        // node.Subscribe(sensor2Topic + "/points", &DynamicProjector::OnNewPointCloud2, this);
         node.Subscribe(sensor2Topic + "/camera_info", &DynamicProjector::OnCameraInfo2, this);
         imagePub2 = node.Advertise<msgs::Image>(sensor2Topic + "/ir/image");
     }
 
     GeneratePattern();
     initialized = true;
+}
+
+void DynamicProjector::OnNewDepthPointCloud(const msgs::PointCloudPacked &msg) 
+{ 
+    if (lastDepthCloud.width() == 0)
+        gzmsg << "DynamicProjector: Received first depth point cloud" << std::endl;
+    lastDepthCloud = msg; 
+}
+
+void DynamicProjector::OnDepthCameraInfo(const msgs::CameraInfo &msg)
+{
+    if (!depthInfoReceived && msg.has_intrinsics())
+    {
+        for (int i=0; i<9; ++i) this->depth_K[i] = msg.intrinsics().k(i);
+        depthInfoReceived = true;
+        gzmsg << "DynamicProjector: Received camera info for depth topic" << std::endl;
+    }
 }
 
 void DynamicProjector::OnNewColorImage(const msgs::Image &msg)
@@ -275,74 +304,62 @@ void DynamicProjector::ProcessImage(const msgs::Image &msg,
                                     const msgs::PointCloudPacked &cloud,
                                     bool isIr1)
 {
-  msgs::Image irMsg;
-  irMsg.set_width(msg.width());
-  irMsg.set_height(msg.height());
-  irMsg.set_pixel_format_type(msgs::PixelFormatType::L_INT8);
-  irMsg.set_step(msg.width());
-  irMsg.mutable_header()->CopyFrom(msg.header());
-  
-  std::string *imgData = irMsg.mutable_data();
-  imgData->resize(static_cast<size_t>(msg.width()) * msg.height());
+    unsigned int width = msg.width();
+    unsigned int height = msg.height();
+    size_t totalPixels = static_cast<size_t>(width) * height;
 
-  unsigned char ambienceScore = 128; // default
-
-  const float gammaPow = 0.6f;
-  const float maxBackground = 220.0f;  // keep natural scene capped at light grey
-
-  if (msg.pixel_format_type() == msgs::PixelFormatType::RGB_INT8)
-  {
-    const unsigned char *src = reinterpret_cast<const unsigned char *>(msg.data().data());
+    msgs::Image irMsg;
+    irMsg.set_width(width);
+    irMsg.set_height(height);
+    irMsg.set_pixel_format_type(msgs::PixelFormatType::L_INT8);
+    irMsg.set_step(width);
+    irMsg.mutable_header()->CopyFrom(msg.header());
+    
+    std::string *imgData = irMsg.mutable_data();
+    imgData->resize(totalPixels);
     unsigned char *dst = reinterpret_cast<unsigned char *>(imgData->data());
-    size_t totalPixels = static_cast<size_t>(msg.width()) * msg.height();
 
-    // Compute ambience score using provided method (Y, sigma, warmth)
-    float ambience = ComputeAmbienceScoreFromRGB(src, totalPixels);
-    ambienceScore = static_cast<unsigned char>(std::lround(ambience));
+    // Physical IR Simulation Parameters (No noise as requested)
+    const float ir_baseline_dim = 0.4f;   
+    const float vignette_strength = 0.6f;  
 
-    // Map ambience to boost & dynamic laser:
-    // contrastBoost = 1.0 + k * (1 - ambienceNorm)
-    const float kBoost = 1.5f; // max extra boost in very dark scenes
-    float ambienceNorm = ambience / 255.0f;
-    float contrastBoost = 1.0f + kBoost * (1.0f - ambienceNorm);
+    float cx = width / 2.0f;
+    float cy = height / 2.0f;
+    float maxDistSq = cx*cx + cy*cy;
 
-    for (size_t i = 0; i < totalPixels; ++i)
+    if (msg.pixel_format_type() == msgs::PixelFormatType::RGB_INT8)
     {
-      float Y = 0.299f * src[3*i] + 0.587f * src[3*i + 1] + 0.114f * src[3*i + 2];
-      float boosted = 255.0f * std::pow(std::clamp(Y / 255.0f, 0.0f, 1.0f), gammaPow);
-      float finalValue = boosted * contrastBoost;
-      dst[i] = static_cast<unsigned char>(std::clamp(finalValue, 0.0f, maxBackground));
+        const unsigned char *src = reinterpret_cast<const unsigned char *>(msg.data().data());
+        for (size_t i = 0; i < totalPixels; ++i)
+        {
+            size_t y_idx = i / width;
+            size_t x_idx = i % width;
+
+            float Y = 0.299f * src[3*i] + 0.587f * src[3*i + 1] + 0.114f * src[3*i + 2];
+            float val = Y * ir_baseline_dim;
+
+            float dx = x_idx - cx;
+            float dy = y_idx - cy;
+            float distSq = dx*dx + dy*dy;
+            float vignette = 1.0f - (vignette_strength * (distSq / maxDistSq));
+            val *= vignette;
+
+            dst[i] = static_cast<unsigned char>(std::clamp(val, 0.0f, 255.0f));
+        }
     }
-  }
-  else if (msg.pixel_format_type() == msgs::PixelFormatType::L_INT8)
-  {
-    const unsigned char *src = reinterpret_cast<const unsigned char *>(msg.data().data());
-    unsigned char *dst = reinterpret_cast<unsigned char *>(imgData->data());
-    size_t totalPixels = static_cast<size_t>(msg.width()) * msg.height();
-
-    float ambience = ComputeAmbienceScoreFromL(src, totalPixels);
-    ambienceScore = static_cast<unsigned char>(std::lround(ambience));
-
-    const float kBoost = 1.5f;
-    float ambienceNorm = ambience / 255.0f;
-    float contrastBoost = 1.0f + kBoost * (1.0f - ambienceNorm);
-
-    for (size_t i = 0; i < totalPixels; ++i)
+    else // L_INT8
     {
-      float Y = static_cast<float>(src[i]);
-      float boosted = 255.0f * std::pow(std::clamp(Y / 255.0f, 0.0f, 1.0f), gammaPow);
-      float finalValue = boosted * contrastBoost;
-      dst[i] = static_cast<unsigned char>(std::clamp(finalValue, 0.0f, maxBackground));
+        const unsigned char *src = reinterpret_cast<const unsigned char *>(msg.data().data());
+        for (size_t i = 0; i < totalPixels; ++i)
+        {
+            float val = static_cast<float>(src[i]) * ir_baseline_dim;
+            dst[i] = static_cast<unsigned char>(std::clamp(val, 0.0f, 255.0f));
+        }
     }
-  }
-  else
-  {
-    imgData->assign(msg.data().begin(), msg.data().end());
-  }
 
-  OverlayDots(irMsg, cloud, isIr1, ambienceScore);
+    OverlayDots(irMsg, cloud, isIr1, 128); 
 
-  pub.Publish(irMsg);
+    pub.Publish(irMsg);
 }
 
 void DynamicProjector::OverlayDots(gz::msgs::Image &imgMsg,
@@ -354,214 +371,113 @@ void DynamicProjector::OverlayDots(gz::msgs::Image &imgMsg,
     unsigned int height = imgMsg.height();
     unsigned char *data = reinterpret_cast<unsigned char *>(imgMsg.mutable_data()->data());
 
-    // Laser base scale (0..1) from configured laserPower
     float baseLaserScale = (laserPower < 15) ? 0.0f : (static_cast<float>(laserPower - 15) / (360.0f - 15.0f));
-
-    // Combined scale: if scene is bright, laser should not increase overall brightness.
-    // So effectiveLaserScale = baseLaserScale * (1 - ambienceNorm)
     float ambienceNorm = static_cast<float>(ambienceScore) / 255.0f;
     float effectiveLaserScale = baseLaserScale * (1.0f - ambienceNorm);
+    
+    // Higher visibility parameters
+    float dotAlphaBase = std::clamp(0.6f + effectiveLaserScale * 0.4f, 0.0f, 1.0f); 
+    float dotBaseVal = 220.0f; 
 
-    // Dot intensity depends on both configured laserPower and whether scene is dark
-    // high laserPower & dark scene -> crisp white dots
-    // Dots are always pure white in IR
-    float dotIntensityF = 255.0f;
+    auto drawDot = [&](int u, int v, float dist, float geomFactor, const DotInfo &dot) {
+        float baseRadius = std::clamp(6.0f / (dist + 1e-3f), 1.2f, 4.5f);
+        float rx = baseRadius * (dot.shape == 1 ? 1.5f : (dot.shape == 2 ? 0.6f : 1.0f));
+        float ry = baseRadius * (dot.shape == 1 ? 0.6f : (dot.shape == 2 ? 1.8f : 1.0f));
 
+        float bg_center = static_cast<float>(data[v * width + u]);
+        float albedo_proxy = std::clamp(0.5f + 0.5f * (bg_center / 128.0f), 0.3f, 1.0f);
 
-    // Dot alpha/opacity: low when laser weak or scene bright
-    float dotAlphaBase = 0.2f + effectiveLaserScale * 0.85f; // ~0.2..1.05 -> clamp later
-    dotAlphaBase = std::clamp(dotAlphaBase, 0.0f, 1.0f);
+        // Boosted intensity for visibility
+        float intensity_falloff = std::clamp(geomFactor / (dist * 0.5f + 0.1f), 0.3f, 2.0f);
+        float finalIntensity = dotBaseVal * albedo_proxy * intensity_falloff;
 
-    // Dot sharpness influenced by both ambience and laser scale: 
-    // - Dark scenes and high laser power -> sharper dots
-    // - Bright scenes or low laser power -> blurrier dots
-    // Dot sharpness: 
-    // - Inner loop: laser power (effectiveLaserScale) controls base sharpness (low power = low sharpness)
-    // - Outer loop: ambience (ambienceNorm) modulates the max sharpness (bright scene = less sharp, dark = sharper)
-    float baseSharpness = 0.8f + 1.2f * effectiveLaserScale; // 0.8 (min) to 2.0 (max) from laser power
-    float maxSharpness = 1.0f + 1.6f * (1.0f - ambienceNorm); // 1.0 (bright) to 2.6 (dark)
-    float dotSharpness = std::min(baseSharpness, maxSharpness);
-
-    auto drawDot = [&](int u, int v, float dist, const DotInfo &dot) {
-    float baseRadius = std::clamp(6.0f / (dist + 1e-3f), 1.0f, 4.0f);
-
-    // --- CIRCLE ---
-    if (dot.shape == 0) {
-        float rx = baseRadius;
-        float ry = baseRadius;
         for (int dy = -static_cast<int>(ry); dy <= static_cast<int>(ry); ++dy) {
             for (int dx = -static_cast<int>(rx); dx <= static_cast<int>(rx); ++dx) {
                 float nxNorm = (float)dx / rx;
                 float nyNorm = (float)dy / ry;
-                if ((nxNorm * nxNorm + nyNorm * nyNorm) > 1.0f) continue;
-                int nx = u + dx; int ny = v + dy;
-                if (nx < 0 || nx >= (int)width || ny < 0 || ny >= (int)height) continue;
-
-                float dissolve = (nxNorm * nxNorm + nyNorm * nyNorm);
-                float alpha = dotAlphaBase * (1.0f - dissolve);
-                alpha = std::clamp(alpha, 0.0f, 1.0f);
-
-                float dotVal = dotIntensityF * dotSharpness;
-                float bg = static_cast<float>(data[ny * width + nx]);
-                float out = (1.0f - alpha) * bg + alpha * dotVal;
-                data[ny * width + nx] = static_cast<unsigned char>(std::clamp(out, 0.0f, 255.0f));
-            }
-        }
-    }
-
-    // --- OVAL ---
-    else if (dot.shape == 1) {
-        float rx = baseRadius * 1.5f; // wider
-        float ry = baseRadius * 0.6f; // flatter
-        for (int dy = -static_cast<int>(ry); dy <= static_cast<int>(ry); ++dy) {
-            for (int dx = -static_cast<int>(rx); dx <= static_cast<int>(rx); ++dx) {
-                float nxNorm = (float)dx / rx;
-                float nyNorm = (float)dy / ry;
-                if ((nxNorm * nxNorm + nyNorm * nyNorm) > 1.0f) continue;
-                int nx = u + dx; int ny = v + dy;
-                if (nx < 0 || nx >= (int)width || ny < 0 || ny >= (int)height) continue;
-
-                float dissolve = (nxNorm * nxNorm + nyNorm * nyNorm);
-                float alpha = dotAlphaBase * (1.0f - dissolve);
-                alpha = std::clamp(alpha, 0.0f, 1.0f);
-
-                float dotVal = dotIntensityF * dotSharpness;
-                float bg = static_cast<float>(data[ny * width + nx]);
-                float out = (1.0f - alpha) * bg + alpha * dotVal;
-                data[ny * width + nx] = static_cast<unsigned char>(std::clamp(out, 0.0f, 255.0f));
-            }
-        }
-    }
-
-    // --- VERTICAL RECTANGLE ---
-    else if (dot.shape == 2) {
-        int rx = static_cast<int>(baseRadius * 0.6f);  // narrower width
-        int ry = static_cast<int>(baseRadius * 1.8f);  // taller height
-        for (int dy = -ry; dy <= ry; ++dy) {
-            for (int dx = -rx; dx <= rx; ++dx) {
+                if (dot.shape != 2 && (nxNorm * nxNorm + nyNorm * nyNorm) > 1.0f) continue;
                 int nx = u + dx; int ny = v + dy;
                 if (nx < 0 || nx >= (int)width || ny < 0 || ny >= (int)height) continue;
 
                 float alpha = dotAlphaBase;
-                float dotVal = dotIntensityF * dotSharpness;
+                if (dot.shape != 2) alpha *= (1.0f - (nxNorm * nxNorm + nyNorm * nyNorm));
+                alpha = std::clamp(alpha, 0.0f, 1.0f);
+
                 float bg = static_cast<float>(data[ny * width + nx]);
-                float out = (1.0f - alpha) * bg + alpha * dotVal;
+                // Additive light blending ensures dots are always brighter than background
+                float out = bg + alpha * finalIntensity;
                 data[ny * width + nx] = static_cast<unsigned char>(std::clamp(out, 0.0f, 255.0f));
             }
         }
-    }
-};
+    };
 
+    float baseline = this->disparityOffset;
+    math::Vector3d cam1_pos(0, baseline / 2.0, 0); 
+    math::Vector3d cam2_pos(0, -baseline / 2.0, 0);
 
-    // --- STEREO LOGIC ---
-    if (this->mode == "stereo")
+    auto findIntersection = [&](const msgs::PointCloudPacked& pc, float h, float v, float fx, float cx, float fy, float cy) -> std::tuple<math::Vector3d, math::Vector3d, bool>
     {
-        if (!cam1InfoReceived || !cam2InfoReceived || lastCloud1.width() == 0 || lastCloud2.width() == 0) return;
+        int u = static_cast<int>(fx * std::tan(h) + cx);
+        int v_px = static_cast<int>(fy * std::tan(v) + cy);
+        if (u < 1 || u >= (int)pc.width() - 1 || v_px < 1 || v_px >= (int)pc.height() - 1) return std::make_tuple(math::Vector3d(), math::Vector3d(), false);
 
-        float fx1 = static_cast<float>(this->cam1_K[0]), cx1 = static_cast<float>(this->cam1_K[2]),
-              fy1 = static_cast<float>(this->cam1_K[4]), cy1 = static_cast<float>(this->cam1_K[5]);
-        float fx2 = static_cast<float>(this->cam2_K[0]), cx2 = static_cast<float>(this->cam2_K[2]),
-              fy2 = static_cast<float>(this->cam2_K[4]), cy2 = static_cast<float>(this->cam2_K[5]);
+        auto getP = [&](int _u, int _v) {
+            size_t idx = (_v * pc.width() + _u) * pc.point_step();
+            return math::Vector3d(
+                *reinterpret_cast<const float*>(&pc.data()[idx + pc.field(0).offset()]),
+                *reinterpret_cast<const float*>(&pc.data()[idx + pc.field(1).offset()]),
+                *reinterpret_cast<const float*>(&pc.data()[idx + pc.field(2).offset()])
+            );
+        };
 
-        float baseline = this->disparityOffset;
-        math::Vector3d cam1_pos(0, baseline / 2.0, 0); // Left eye
-        math::Vector3d cam2_pos(0, -baseline / 2.0, 0); // Right eye
+        math::Vector3d p0 = getP(u, v_px);
+        if(!std::isfinite(p0.X()) || p0.X() <= 0) return std::make_tuple(math::Vector3d(), math::Vector3d(), false);
 
-        for (const auto &dot : this->dotPattern)
-        {
-            math::Vector3d p_final_world_frame;
-            bool point_found = false;
-            float h_in_cam1 = dot.h + baseline / 2.0f;
-            float h_in_cam2 = dot.h - baseline / 2.0f;
-
-            auto findIntersection = [&](const msgs::PointCloudPacked& pc, float h, float v, float fx, float cx, float fy, float cy) -> std::tuple<math::Vector3d, bool>
-            {
-                if (std::abs(h) > hfov / 2.0) return std::make_tuple(math::Vector3d(), false);
-                int u = static_cast<int>(fx * std::tan(h) + cx);
-                int v_px = static_cast<int>(fy * std::tan(v) + cy);
-                if (u < 0 || u >= static_cast<int>(width) || v_px < 0 || v_px >= static_cast<int>(height)) return std::make_tuple(math::Vector3d(), false);
-
-                int cX = std::clamp(static_cast<int>((float)u * pc.width() / width), 0, (int)pc.width() - 1);
-                int cY = std::clamp(static_cast<int>((float)v_px * pc.height() / height), 0, (int)pc.height() - 1);
-                size_t idx = (cY * pc.width() + cX) * pc.point_step();
-                const float* px = reinterpret_cast<const float*>(&pc.data()[idx + pc.field(0).offset()]);
-                
-                if(std::isfinite(*px)) {
-                    math::Vector3d p(*px, *reinterpret_cast<const float*>(&pc.data()[idx + pc.field(1).offset()]), *reinterpret_cast<const float*>(&pc.data()[idx + pc.field(2).offset()]));
-                    if(p.X() > 0) return {p, true};
-                }
-                return std::make_tuple(math::Vector3d(), false);
-            };
-
-            auto [p1_cam_frame, found1] = findIntersection(lastCloud1, h_in_cam1, dot.v, fx1, cx1, fy1, cy1);
-            auto [p2_cam_frame, found2] = findIntersection(lastCloud2, h_in_cam2, dot.v, fx2, cx2, fy2, cy2);
-
-            if (found1 && found2) {
-                math::Vector3d p1_world = p1_cam_frame + cam1_pos;
-                math::Vector3d p2_world = p2_cam_frame + cam2_pos;
-                p_final_world_frame = (p1_world.Length() < p2_world.Length()) ? p1_world : p2_world;
-                point_found = true;
-            } else if (found1) {
-                p_final_world_frame = p1_cam_frame + cam1_pos;
-                point_found = true;
-            } else if (found2) {
-                p_final_world_frame = p2_cam_frame + cam2_pos;
-                point_found = true;
-            }
-            
-            if (!point_found) continue;
-            
-            if (isIr1) {
-                math::Vector3d p_in_cam1_frame = p_final_world_frame - cam1_pos; 
-                if (p_in_cam1_frame.X() <= 0) continue;
-                int u = static_cast<int>(-fy1 * (p_in_cam1_frame.Y() / p_in_cam1_frame.X()) + cx1);
-                int v = static_cast<int>(-fx1 * (p_in_cam1_frame.Z() / p_in_cam1_frame.X()) + cy1);
-                if (u >= 0 && u < static_cast<int>(width) && v >= 0 && v < static_cast<int>(height)) {
-                    drawDot(u, v, static_cast<float>(p_in_cam1_frame.Length()), dot);
-                }
-            } else { // isIr2
-                math::Vector3d p_in_cam2_frame = p_final_world_frame - cam2_pos;
-                if (p_in_cam2_frame.X() <= 0) continue;
-                int u = static_cast<int>(-fy2 * (p_in_cam2_frame.Y() / p_in_cam2_frame.X()) + cx2);
-                int v = static_cast<int>(-fx2 * (p_in_cam2_frame.Z() / p_in_cam2_frame.X()) + cy2);
-                if (u >= 0 && u < static_cast<int>(width) && v >= 0 && v < static_cast<int>(height)) {
-                    drawDot(u, v, static_cast<float>(p_in_cam2_frame.Length()), dot);
-                }
-            }
+        math::Vector3d p1 = getP(u + 1, v_px);
+        math::Vector3d p2 = getP(u, v_px + 1);
+        math::Vector3d n(1, 0, 0);
+        if (std::isfinite(p1.X()) && std::isfinite(p2.X())) {
+            n = (p1 - p0).Cross(p2 - p0);
+            n.Normalize();
         }
-        return; // End of stereo logic
-    }
 
-    // --- MONO LOGIC ---
-    if (!cam1InfoReceived || lastCloud1.width() == 0) return;
-    
-    float fx = static_cast<float>(this->cam1_K[0]), cx = static_cast<float>(this->cam1_K[2]),
-          fy = static_cast<float>(this->cam1_K[4]), cy = static_cast<float>(this->cam1_K[5]);
-
-    int cW = lastCloud1.width(), cH = lastCloud1.height(), pStep = lastCloud1.point_step();
-    const unsigned char* pcData = reinterpret_cast<const unsigned char*>(lastCloud1.data().data());
-    int xOff = lastCloud1.field(0).offset(), yOff = lastCloud1.field(1).offset(), zOff = lastCloud1.field(2).offset();
+        return {p0, n, true};
+    };
 
     for (const auto &dot : this->dotPattern)
     {
-        int u = static_cast<int>(fx * std::tan(dot.h) + cx);
-        int v = static_cast<int>(fy * std::tan(dot.v) + cy);
+        math::Vector3d p_world, normal;
+        bool found = false;
 
-        if (u >= 0 && u < static_cast<int>(width) && v >= 0 && v < static_cast<int>(height))
-        {
-            int cX = std::clamp(static_cast<int>((float)u * cW / width), 0, cW - 1);
-            int cY = std::clamp(static_cast<int>((float)v * cH / height), 0, cH - 1);
-            size_t idx = (cY * cW + cX) * pStep;
-            
-            const float* px = reinterpret_cast<const float*>(pcData + idx + xOff);
-            const float* py = reinterpret_cast<const float*>(pcData + idx + yOff);
-            const float* pz = reinterpret_cast<const float*>(pcData + idx + zOff);
-
-            if (std::isfinite(*px) && std::isfinite(*py) && std::isfinite(*pz)) {
-                float dist = std::sqrt((*px)*(*px) + (*py)*(*py) + (*pz)*(*pz));
-                if (dist > 0) drawDot(u, v, dist, dot);
-            }
+        if (!depthTopic.empty() && lastDepthCloud.width() > 0 && depthInfoReceived) {
+            auto [p, n, f] = findIntersection(lastDepthCloud, dot.h, dot.v, static_cast<float>(depth_K[0]), static_cast<float>(depth_K[2]), static_cast<float>(depth_K[4]), static_cast<float>(depth_K[5]));
+            if (f) { p_world = p; normal = n; found = true; }
+        } 
+        
+        if (!found && lastCloud1.width() > 0 && cam1InfoReceived) {
+            auto [p, n, f] = findIntersection(lastCloud1, dot.h + baseline/2.0f, dot.v, static_cast<float>(cam1_K[0]), static_cast<float>(cam1_K[2]), static_cast<float>(cam1_K[4]), static_cast<float>(cam1_K[5]));
+            if (f) { p_world = p + cam1_pos; normal = n; found = true; }
         }
+
+        if (!found) continue;
+
+        math::Vector3d ray_dir(1, -std::tan(dot.h), -std::tan(dot.v));
+        ray_dir.Normalize();
+        float cos_theta = std::abs(static_cast<float>(normal.Dot(-ray_dir)));
+
+        const double* k_ir = isIr1 ? (cam1InfoReceived ? cam1_K.data() : (depthInfoReceived ? depth_K.data() : nullptr)) 
+                                   : (cam2InfoReceived ? cam2_K.data() : (depthInfoReceived ? depth_K.data() : nullptr));
+        if (!k_ir) continue;
+
+        math::Vector3d p_cam = p_world - (isIr1 ? cam1_pos : cam2_pos);
+        if (p_cam.X() <= 0) continue;
+
+        float fx_ir = static_cast<float>(k_ir[0]), cx_ir = static_cast<float>(k_ir[2]), fy_ir = static_cast<float>(k_ir[4]), cy_ir = static_cast<float>(k_ir[5]);
+        int u = static_cast<int>(cx_ir - fx_ir * (p_cam.Y() / p_cam.X()));
+        int v = static_cast<int>(cy_ir - fy_ir * (p_cam.Z() / p_cam.X()));
+
+        if (u >= 0 && u < (int)width && v >= 0 && v < (int)height)
+            drawDot(u, v, static_cast<float>(p_cam.Length()), cos_theta, dot);
     }
 }
 
