@@ -27,18 +27,28 @@ jobs:
         shell: bash
         run: |
           apt update && apt install -y curl gnupg lsb-release
-          if [ "${{ matrix.ros_distro }}" = "humble" ]; then
-            # Add OSRF repo for Gazebo Harmonic on Humble
-            curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
-          fi
+          # Add OSRF repo for Gazebo packages
+          curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
           apt update
 
       - name: Install Gazebo dependencies
         shell: bash
         run: |
           apt update
-          apt install -y libgz-common5-dev libgz-cmake3-dev
+          apt install -y \
+            gz-harmonic \
+            libgz-sim8-dev \
+            libgz-plugin2-dev \
+            libgz-rendering8-dev \
+            libgz-sensors8-dev \
+            libgz-transport12-dev \
+            libgz-math7-dev \
+            libgz-common5-dev \
+            libgz-msgs10-dev \
+            libgz-cmake3-dev \
+            libgz-tools2-dev \
+            libgz-gui8-dev
 
       - name: rosdep install
         shell: bash
