@@ -19,7 +19,7 @@ def generate_launch_description():
     gz_start_world = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([get_package_share_directory('ros_gz_sim'), '/launch', '/gz_sim.launch.py']),
         launch_arguments={
-            'gz_args' : '-r ' + 'empty.sdf'
+            'gz_args' : '-r ' + '/home/nathan/clearpath_dev/src/gz_dynamic_projector/worlds/dynamic_projector_world.sdf'
             }.items(),
     )
 
@@ -62,8 +62,8 @@ def generate_launch_description():
 
     # Add actions to LaunchDescription
     ld.add_action(SetParameter(name='use_sim_time', value=False))
-    #ld.add_action(gz_start_world)
-    #ld.add_action(node_spawn_entity)
+    ld.add_action(gz_start_world)
+    ld.add_action(node_spawn_entity)
     ld.add_action(node_robot_state_publisher)
     #ld.add_action(node_joint_state_publisher)
     ld.add_action(node_rviz)
