@@ -1,6 +1,6 @@
 # gz_realsense
 
-A ROS 2 repository containing Gazebo plugins and RealSense™ camera simulations for high-fidelity depth sensing environments.
+A ROS 2 repository containing a custom Gazebo plugin to simulate real-world like emitter patterns for the RealSense™ camera. This work is inspired by my research on reconstructing a scene populated with emitter patterns and you can see the relevant paper here: [Clarity Enhanced Active Reconstruction of Infrared Imagery for low-light enhancement](http://arxiv.org/abs/2510.04883)
 
 ## Build Status
 
@@ -18,15 +18,22 @@ A Gazebo Sim system plugin that simulates the infrared (IR) emitter pattern of I
 
 #### Mathematical Model
 *   **Pattern Generation**: Generates a semi-random distribution of points using grid-based jittering.
-    $$ \text{pattern\_width} = \text{HFOV} + |\text{disparity\_offset}| $$
+
+```math
+pattern\_width = HFOV + |disparity\_offset|
+```
 *   **Geometric Projection**: Projects dots onto the scene using ray-scene intersection and surface normal calculation.
 *   **Intensity Modulation**: Brightness is modulated by distance falloff, incidence angle (Lambert's Cosine Law), and surface albedo.
 *   **Camera Projection**: 3D points are projected into 2D infrared image coordinates using intrinsic matrices $K$.
+
+```math
+\begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K \cdot P_{camera}
+```
 *   **Optical Simulation**: Includes radial vignetting and ambient light blending based on an "ambience score."
 
 #### Topics
-*   **Subscribed**: `{sensor_topic}/image`, `{sensor_topic}/camera_info`, `{depth_topic}/points` (optional).
-*   **Published**: `{sensor_topic}/ir/image` (with emitter pattern), `/color/enhanced` (optional).
+*   **Subscribed**: `{sensor_topic}/image`, `{sensor_topic}/camera_info`, `{depth_topic}/points`.
+*   **Published**: `{sensor_topic}/ir/image` (with emitter pattern), `/{sensor_topic}/enhanced` .
 
 ---
 

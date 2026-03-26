@@ -16,7 +16,9 @@ This plugin replicates that behavior by dynamically overlaying a synthetically g
 
 ### Pattern Generation
 The plugin generates a semi-random distribution of points across the camera's field of view (FOV). For a stereo configuration, the pattern width is adjusted to account for the baseline disparity:
-$$ \text{pattern\_width} = \text{HFOV} + |\text{disparity\_offset}| $$
+```math
+pattern\_width = HFOV + |disparity\_offset|
+```
 
 Dots are distributed using a grid-based jittering approach to ensure uniform coverage while maintaining a pseudo-random appearance.
 
@@ -30,7 +32,9 @@ The core of the simulation lies in projecting these dots onto the scene. For eac
     *   **Incidence Angle**: Uses Lambert's Cosine Law where $I \propto \mathbf{n} \cdot \mathbf{l}$ (where $\mathbf{l}$ is the reverse ray direction).
     *   **Surface Albedo**: The dot brightness is blended with the underlying surface intensity to simulate realistic light interaction.
 4.  **Camera Projection**: The 3D point $\mathbf{P}_{world}$ is projected back into the 2D image coordinates $(u, v)$ of each infrared camera using their respective intrinsic matrices $K$:
-    $$ \begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K \cdot \mathbf{P}_{camera} $$
+```math
+\begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K \cdot P_{camera}
+```
 
 ### Optical Simulation
 *   **Vignetting**: A radial falloff is applied to the IR images to simulate the lens characteristics of physical infrared sensors.
