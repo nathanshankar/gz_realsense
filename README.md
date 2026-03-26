@@ -1,20 +1,67 @@
 # gz_realsense
 
-A ROS 2 repository containing Gazebo plugins and RealSense camera simulations.
+A ROS 2 repository containing Gazebo plugins and RealSense™ camera simulations for high-fidelity depth sensing environments.
+
+## Build Status
+
+| Distribution | Status |
+| :--- | :--- |
+| **ROS 2 Humble** | [![Humble Build Status](https://img.shields.io/github/actions/workflow/status/nathanshankar/gz_realsense/ros_ci_humble.yml?branch=main&label=Build)](https://github.com/nathanshankar/gz_realsense/actions/workflows/ros_ci_humble.yml) |
+| **ROS 2 Jazzy** | [![Jazzy Build Status](https://img.shields.io/github/actions/workflow/status/nathanshankar/gz_realsense/ros_ci_jazzy.yml?branch=main&label=Build)](https://github.com/nathanshankar/gz_realsense/actions/workflows/ros_ci_jazzy.yml) |
+
+---
 
 ## Packages
 
-- **gz_dynamic_projector**: A Gazebo plugin to dynamically control a projector, optimized for Gazebo Harmonic.
-- **realsense_cam**: A ROS 2 package for RealSense camera simulation and URDFs.
+### 1. Gazebo Dynamic Projector Plugin (`gz_dynamic_projector`)
+A Gazebo Sim system plugin that simulates the infrared (IR) emitter pattern of Intel RealSense™ depth cameras. It provides high-contrast texture to featureless surfaces, enabling accurate stereo matching in simulation.
 
-## Supported Distributions
+#### Mathematical Model
+*   **Pattern Generation**: Generates a semi-random distribution of points using grid-based jittering.
+    $$ \text{pattern\_width} = \text{HFOV} + |\text{disparity\_offset}| $$
+*   **Geometric Projection**: Projects dots onto the scene using ray-scene intersection and surface normal calculation.
+*   **Intensity Modulation**: Brightness is modulated by distance falloff, incidence angle (Lambert's Cosine Law), and surface albedo.
+*   **Camera Projection**: 3D points are projected into 2D infrared image coordinates using intrinsic matrices $K$.
+*   **Optical Simulation**: Includes radial vignetting and ambient light blending based on an "ambience score."
 
-- **ROS 2 Humble** (Ubuntu 22.04) - Requires Gazebo Harmonic from OSRF.
-- **ROS 2 Jazzy** (Ubuntu 24.04) - Default Gazebo Harmonic.
+#### Topics
+*   **Subscribed**: `{sensor_topic}/image`, `{sensor_topic}/camera_info`, `{depth_topic}/points` (optional).
+*   **Published**: `{sensor_topic}/ir/image` (with emitter pattern), `/color/enhanced` (optional).
 
-## Continuous Integration
+---
 
-This repository uses GitHub Actions to build and test on both Humble and Jazzy.
+### 2. RealSense Camera Simulation (`realsense_cam`)
+Provides URDF models and launch configurations for the Intel RealSense D455 camera, integrated with the dynamic projector plugin.
+
+#### Installation
+Install dependencies:
+```bash
+sudo apt-get update
+sudo apt-get install ros-$ROS_DISTRO-realsense2-*
+```
+
+#### Usage
+To launch the simulation with the camera and Rviz:
+```bash
+ros2 launch realsense_cam depth.launch.py
+```
+
+#### URDF Integration
+To include the D455 camera in your robot description:
+```xml
+<xacro:include filename="$(find realsense_cam)/urdf/d455.urdf.xacro"/>
+```
+
+Attach the camera to your robot's link:
+```xml
+<joint name="realsense_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <parent link="your_robot_link"/>
+    <child link="base_screw"/>
+</joint>
+```
+
+---
 
 ## License
 

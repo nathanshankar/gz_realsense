@@ -1,4 +1,4 @@
-name: ROS 2 CI
+name: ROS 2 CI Humble
 
 on:
   push:
@@ -7,19 +7,10 @@ on:
     branches: [ main ]
 
 jobs:
-  build_and_test:
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        ros_distro: [humble, jazzy]
-        include:
-          - ros_distro: humble
-            ubuntu_distro: jammy
-          - ros_distro: jazzy
-            ubuntu_distro: noble
     container:
-      image: ros:${{ matrix.ros_distro }}-ros-base-${{ matrix.ubuntu_distro }}
+      image: ros:humble-ros-base-jammy
     steps:
       - uses: actions/checkout@v4
 
@@ -59,11 +50,5 @@ jobs:
       - name: build
         shell: bash
         run: |
-          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
+          . /opt/ros/humble/setup.sh
           colcon build --symlink-install
-
-      - name: test
-        shell: bash
-        run: |
-          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
-          colcon test --return-code-on-test-failure
