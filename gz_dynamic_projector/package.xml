@@ -3,7 +3,7 @@
   <name>gz_dynamic_projector</name>
   <version>0.0.0</version>
   <description>A Gazebo plugin to dynamically control a projector.</description>
-  <maintainer email="user@example.com">Your Name</maintainer>
+  <maintainer email="nathanshankar465@gmail.com">nathan</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

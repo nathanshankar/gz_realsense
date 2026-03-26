@@ -1,0 +1,53 @@
+name: ROS 2 CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [humble, jazzy]
+        include:
+          - ros_distro: humble
+            ubuntu_distro: jammy
+          - ros_distro: jazzy
+            ubuntu_distro: noble
+    container:
+      image: ros:${{ matrix.ros_distro }}-ros-base-${{ matrix.ubuntu_distro }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          apt update && apt install -y curl gnupg lsb-release
+          if [ "${{ matrix.ros_distro }}" = "humble" ]; then
+            # Add OSRF repo for Gazebo Harmonic on Humble
+            curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
+          fi
+          apt update
+
+      - name: rosdep install
+        shell: bash
+        run: |
+          rosdep update
+          rosdep install --from-paths . --ignore-src -r -y
+
+      - name: build
+        shell: bash
+        run: |
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
+          colcon build --symlink-install
+
+      - name: test
+        shell: bash
+        run: |
+          . /opt/ros/${{ matrix.ros_distro }}/setup.sh
+          colcon test --return-code-on-test-failure
