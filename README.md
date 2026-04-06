@@ -2,6 +2,11 @@
 
 A ROS 2 repository containing a custom Gazebo plugin to simulate real-world like emitter patterns for the RealSense™ camera. This work is inspired by my research on reconstructing a scene populated with emitter patterns and you can see the relevant paper here: [Clarity Enhanced Active Reconstruction of Infrared Imagery for low-light enhancement](http://arxiv.org/abs/2510.04883)
 
+
+
+https://github.com/user-attachments/assets/a8f81fb9-3d02-4354-aab1-d3d90f5e4b35
+
+
 ## Build Status
 
 | Distribution | Status |
